@@ -164,6 +164,25 @@ class HFDraftSession:
             self.cache_len = n
 
     @torch.inference_mode()
+    def logits_at(self, committed, agreed):
+        """Cached-path logits for the position after committed + agreed.
+
+        Replays exactly what `draft` does, so the result is the vector that
+        actually chose the token -- which is what a cache bug would corrupt.
+        """
+        base = len(committed)
+        self._crop(base)
+        new = committed[self.cache_len :]
+        if not new:
+            self._crop(base - 1)
+            new = committed[base - 1 :]
+        logits = self._step(new)
+        for t in agreed:
+            logits = self._step([t])
+        self._crop(base)
+        return logits.float()
+
+    @torch.inference_mode()
     def draft(self, committed, gamma):
         base = len(committed)
         self._crop(base)
@@ -184,23 +203,43 @@ class HFDraftSession:
 
 
 @torch.inference_mode()
-def draft_divergence_margin(model, device, committed, agreed):
-    """Top-2 margin at the position where cached and uncached drafting diverged.
+def draft_divergence_report(model, draft_session, device, committed, agreed):
+    """Why the cached and uncached draft paths chose different tokens.
+
+    An argmax flip is only a symptom. The cause is measurable: compare the two
+    paths' full logit vectors at the divergence point.
+
+      max_abs_delta  largest disagreement between the two logit vectors
+      ulps           that delta in bf16 units-at-this-magnitude (mantissa 2^-8)
+      logit_gap      the top-2 margin the flip had to cross
 
     Chunked prefill (cache path) and full prefill (`generate`) reduce in
-    different orders, so bf16 logits differ in the last bits. That only changes
-    the argmax where the top-2 are near-tied. A tiny margin here means the
-    disagreement is numerical noise; a large one means a real cache bug.
+    different orders, so bf16 logits differ in their last bits -- a handful of
+    ULPs. If max_abs_delta is at that scale AND is large enough to cross
+    logit_gap, the flip is fully explained by numerics. A cache bug instead
+    corrupts attention outright, putting the delta thousands of ULPs out.
     """
-    ids = torch.tensor([list(committed) + list(agreed)], device=device)
-    logits = model(input_ids=ids, use_cache=False).logits[0, -1].float()
-    top = logits.topk(2)
-    probs = torch.softmax(logits, dim=-1)
+    seq = list(committed) + list(agreed)
+    ids = torch.tensor([seq], device=device)
+    full = model(input_ids=ids, use_cache=False).logits[0, -1].float()
+    cached = draft_session.logits_at(committed, agreed)
+
+    delta = float((cached - full).abs().max())
+    scale = float(full.abs().max())
+    ulp = scale * 2**-8  # bf16 spacing at this magnitude
+    top = full.topk(2)
+    probs = torch.softmax(full, dim=-1)
+    gap = float(top.values[0] - top.values[1])
     return {
-        "logit_gap": float(top.values[0] - top.values[1]),
+        "logit_gap": gap,
         "p1": float(probs[top.indices[0]]),
         "p2": float(probs[top.indices[1]]),
         "ids": [int(x) for x in top.indices],
+        "max_abs_delta": delta,
+        "ulps": delta / max(ulp, 1e-12),
+        "explains_flip": delta >= gap,
+        # A few dozen ULPs is reduction-order noise. Thousands is a broken cache.
+        "numerical": delta / max(ulp, 1e-12) < 100.0,
     }
 
 
@@ -421,18 +460,24 @@ def main():
                     if block != ref:
                         _s["draft_bad"] += 1
                         i = tc.first_mismatch(block, ref)
-                        d = draft_divergence_margin(draft, device, committed, block[:i])
-                        near_tie = d["logit_gap"] < 0.05
-                        _s["draft_near_tie"] += int(near_tie)
+                        d = draft_divergence_report(
+                            draft, draft_session, device, committed, block[:i])
+                        benign = d["numerical"] and d["explains_flip"]
+                        _s["draft_near_tie"] += int(benign)
                         print(f"  [draft-cache] MISMATCH prompt {_pi} cycle {_s['cycle']} "
                               f"at draft index {i}")
                         print(f"      cached   {tok.decode(block[i:i+4])!r}")
                         print(f"      uncached {tok.decode(ref[i:i+4])!r}")
                         print(f"      top-2 {[tok.decode([t]) for t in d['ids']]}  "
-                              f"logit gap {d['logit_gap']:.4f}  "
-                              f"p {d['p1']:.4f} vs {d['p2']:.4f}  -> "
-                              + ("NEAR-TIE (numerical noise, harmless)"
-                                 if near_tie else "REAL DIVERGENCE (cache bug)"))
+                              f"gap {d['logit_gap']:.4f}  p {d['p1']:.4f} vs {d['p2']:.4f}")
+                        print(f"      cached-vs-uncached logits: max delta "
+                              f"{d['max_abs_delta']:.4f} = {d['ulps']:.1f} bf16 ULP"
+                              f"{'s' if d['ulps'] >= 2 else ''}, "
+                              f"{'crosses' if d['explains_flip'] else 'does NOT cross'} the gap")
+                        print("      -> " + (
+                            "NUMERICAL (reduction-order noise; cannot bias the study)"
+                            if benign else
+                            "UNEXPLAINED — investigate the draft cache"))
                 return block
 
             res = tc.run_prompt(
@@ -512,11 +557,12 @@ def main():
               f"({'OK' if survive_disagreements == 0 else 'INVESTIGATE'})")
     if args.check_draft_cache:
         hard = draft_cache_disagreements - draft_cache_near_ties
-        # Near-tie flips are bf16 noise, not a bug, and they cannot bias the
-        # study: the draft only proposes, and every metric is measured against
-        # the target. Only a large-margin disagreement indicates a cache bug.
+        # Numerically-explained flips cannot bias the study: the draft only
+        # proposes, every committed token is target-verified greedy, and both
+        # survival and alignment are measured against the target. They change
+        # which escrows exist, not what is measured.
         print(f"draft-cache cross-check: {draft_cache_disagreements}/{draft_cache_checks} "
-              f"cycles disagree ({draft_cache_near_ties} near-tie, {hard} real) "
+              f"cycles disagree ({draft_cache_near_ties} numerical, {hard} unexplained) "
               f"({'OK' if hard == 0 else 'INVESTIGATE'})")
     print("next: python analyze_traces.py " + out_path)
 
