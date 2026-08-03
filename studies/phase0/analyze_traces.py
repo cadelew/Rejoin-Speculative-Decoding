@@ -147,10 +147,40 @@ def report_domain(dom, ev, summ, has_align):
             print(f"  headroom over offset-0 {st.mean(Lb) - st.mean(Ls):+.2f} tokens/event")
         gains["best-bridge"] = st.mean([max(0, x) for x in db])
 
+        # Front-trim: escrow[j:] attached immediately. Recomputed here rather
+        # than in the trace because raw ids are logged -- no GPU re-run needed.
+        raw = [e for e in ev if e.get("suffix_ids") and e.get("realized_ids") is not None]
+        if len(raw) == len(ev):
+            trims = [tc.best_trim(e["suffix_ids"], e["realized_ids"]) for e in ev]
+            Lt = [t[0] for t in trims]
+            dt = [a - b for a, b in zip(Lt, Lf)]
+            print("\n-- front-trim attachment (IMPLEMENTABLE: batched candidate tree) --")
+            print(band("L_trim", Lt))
+            print(band("delta_trim", dt))
+            print(f"  {'trim wins':<24} {sum(x > 0 for x in dt)/n:5.1%}")
+            print("  trim curve             " + curve(Lt))
+            tj = Counter(t[1] for t in trims if t[0] > 0)
+            if tj:
+                tot = sum(tj.values())
+                print("  winning trim length    " + "  ".join(
+                    f"j={j}:{c/tot:4.0%}" for j, c in sorted(tj.items())))
+            gains["front-trim"] = st.mean([max(0, x) for x in dt])
+
         Lc = [e["lcs_len"] for e in ev]
-        print("\n-- longest shared run (slack on BOTH sides) --")
+        print("\n-- longest shared run (slack on BOTH sides; upper bound) --")
         print(band("lcs_len", Lc))
         print("  lcs curve              " + curve(Lc))
+        li = Counter(e["lcs_i"] for e in ev if e["lcs_len"] >= 4)
+        lj = Counter(e["lcs_j"] for e in ev if e["lcs_len"] >= 4)
+        if li:
+            tot = sum(li.values())
+            print(f"  where the run starts (events with lcs >= 4, n={tot}):")
+            print("    in the escrow  (trim) " + "  ".join(
+                f"i={i}:{c/tot:4.0%}" for i, c in sorted(li.items())[:6]))
+            print("    in the target (bridge) " + "  ".join(
+                f"j={j}:{c/tot:4.0%}" for j, c in sorted(lj.items())[:6]))
+            only_trim = sum(c for j, c in lj.items() if j == 0) / tot
+            print(f"    j==0 (front trim alone suffices): {only_trim:5.1%}")
 
         null = null_alignment(ev)
         if null:

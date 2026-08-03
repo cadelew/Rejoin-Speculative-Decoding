@@ -95,6 +95,28 @@ def best_bridge(
     return best_len, best_k
 
 
+def best_trim(
+    suffix: Sequence[int], realized: Sequence[int], max_trim: int = MAX_BRIDGE
+) -> Tuple[int, int]:
+    """Best attachment when the escrow is trimmed at the FRONT and attaches
+    immediately -- no bridge.
+
+    Unlike `best_bridge`, this one is implementable online: propose escrow[j:]
+    for several small j as a batched candidate tree sharing the corrected
+    prefix, and take whichever verifies longest. Nothing about the target's
+    continuation needs to be known in advance. j=0 reduces to `L_survive`.
+
+    Returns (length, j).
+    """
+    best_len, best_j = 0, 0
+    limit = min(max_trim, len(suffix))
+    for j in range(limit + 1):
+        matched, _ = prefix_match(suffix[j:], realized)
+        if matched > best_len:
+            best_len, best_j = matched, j
+    return best_len, best_j
+
+
 def longest_common_run(a: Sequence, b: Sequence) -> Tuple[int, int, int]:
     """Longest contiguous common subsequence. Returns (length, start_in_a, start_in_b).
 

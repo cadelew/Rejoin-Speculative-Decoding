@@ -119,6 +119,20 @@ def test_best_bridge():
     print("  best_bridge: OK")
 
 
+def test_best_trim():
+    suffix = [7, 8, 9]
+    # escrow attaches immediately once its first token is dropped
+    assert tc.best_trim(suffix, [8, 9, 1]) == (2, 1)
+    # no trim needed
+    assert tc.best_trim(suffix, [7, 8, 9]) == (3, 0)
+    # trim beyond the search window is not found
+    assert tc.best_trim([0] * 10 + [7], [7, 1], max_trim=2) == (0, 0)
+    assert tc.best_trim([0] * 10 + [7], [7, 1], max_trim=10) == (1, 10)
+    # a bridge is NOT allowed: escrow must attach at realized[0]
+    assert tc.best_trim(suffix, [5, 7, 8, 9]) == (0, 0)
+    print("  best_trim: OK")
+
+
 def test_longest_common_run():
     assert tc.longest_common_run([1, 2, 3, 4], [9, 2, 3, 9]) == (2, 1, 1)
     assert tc.longest_common_run([1, 2, 3], [1, 2, 3]) == (3, 0, 0)
@@ -270,6 +284,7 @@ if __name__ == "__main__":
     print("running core tests (no GPU needed)...")
     test_prefix_match_censoring()
     test_best_bridge()
+    test_best_trim()
     test_longest_common_run()
     test_fill_alignment_detects_bridge()
     test_fill_alignment_censoring()
