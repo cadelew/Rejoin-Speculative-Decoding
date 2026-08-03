@@ -181,6 +181,10 @@ def report_domain(dom, ev, summ, has_align):
                 f"j={j}:{c/tot:4.0%}" for j, c in sorted(lj.items())[:6]))
             only_trim = sum(c for j, c in lj.items() if j == 0) / tot
             print(f"    j==0 (front trim alone suffices): {only_trim:5.1%}")
+        # Ceiling: both-sided oracle, and it does not pay for the bridge tokens
+        # it assumes. Real policies cannot reach this; it bounds the addressable
+        # market for a repair model that predicts (trim, bridge).
+        gains["two-sided CEIL"] = st.mean([max(0, a - b) for a, b in zip(Lc, Lf)])
 
         null = null_alignment(ev)
         if null:
