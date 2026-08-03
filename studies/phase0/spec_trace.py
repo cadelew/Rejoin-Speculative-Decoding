@@ -351,6 +351,9 @@ def main():
     ap.add_argument("--draft", default="Qwen/Qwen3-0.6B")
     ap.add_argument("--domain", default="code", help="code | math | chat")
     ap.add_argument("--n", type=int, default=100, help="number of prompts")
+    ap.add_argument("--start", type=int, default=0,
+                    help="skip the first N prompts (resume after a disconnect; "
+                         "prompt_id stays absolute so traces concatenate cleanly)")
     ap.add_argument("--gamma", type=int, default=32, help="draft block length")
     ap.add_argument("--max-new", type=int, default=512)
     ap.add_argument("--out", default=None, help="JSONL output path")
@@ -413,6 +416,9 @@ def main():
         pairs = [("Write a haiku about the ocean.", ""), ("Explain what a hash map is.", "")]
     else:
         pairs = load_prompts(args.domain, args.n)
+    if args.start:
+        pairs = pairs[args.start:]
+        print(f"resuming at prompt {args.start} ({len(pairs)} remaining)")
 
     out_path = args.out or f"traces/{args.domain}.jsonl"
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
@@ -425,6 +431,7 @@ def main():
         "device": device, "dtype": str(dtype),
         "gpu": torch.cuda.get_device_name(0) if device == "cuda" else None,
         "gamma": args.gamma, "max_new": args.max_new, "n_prompts": len(pairs),
+        "start": args.start,
         "thinking": args.thinking, "prefill": not args.no_prefill,
         "branch_verify": args.branch_verify, "draft_cache": not args.no_draft_cache,
         "load_in_8bit": args.load_in_8bit,
@@ -441,7 +448,7 @@ def main():
     t0 = time.time()
 
     with torch.inference_mode():
-        for pi, (text, prefill) in enumerate(pairs):
+        for pi, (text, prefill) in enumerate(pairs, start=args.start):
             if args.no_prefill:
                 prefill = ""
             ids = build_prompt_ids(tok, text, prefill, thinking=args.thinking)
