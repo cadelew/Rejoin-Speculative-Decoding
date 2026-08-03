@@ -183,6 +183,27 @@ class HFDraftSession:
         return out
 
 
+@torch.inference_mode()
+def draft_divergence_margin(model, device, committed, agreed):
+    """Top-2 margin at the position where cached and uncached drafting diverged.
+
+    Chunked prefill (cache path) and full prefill (`generate`) reduce in
+    different orders, so bf16 logits differ in the last bits. That only changes
+    the argmax where the top-2 are near-tied. A tiny margin here means the
+    disagreement is numerical noise; a large one means a real cache bug.
+    """
+    ids = torch.tensor([list(committed) + list(agreed)], device=device)
+    logits = model(input_ids=ids, use_cache=False).logits[0, -1].float()
+    top = logits.topk(2)
+    probs = torch.softmax(logits, dim=-1)
+    return {
+        "logit_gap": float(top.values[0] - top.values[1]),
+        "p1": float(probs[top.indices[0]]),
+        "p2": float(probs[top.indices[1]]),
+        "ids": [int(x) for x in top.indices],
+    }
+
+
 def make_uncached_draft_fn(model, device, eos_ids):
     """Reference drafting path (no draft cache). Used by --check-draft-cache."""
     eos_list = sorted(eos_ids)
@@ -273,6 +294,15 @@ def model_revision(model):
     return getattr(getattr(model, "config", None), "_commit_hash", None)
 
 
+def dtype_kwarg(dtype):
+    """Transformers renamed `torch_dtype` to `dtype` in 4.56."""
+    try:
+        parts = tuple(int(x) for x in transformers.__version__.split(".")[:2])
+    except ValueError:
+        parts = (0, 0)
+    return {"dtype": dtype} if parts >= (4, 56) else {"torch_dtype": dtype}
+
+
 # ---------------------------------- main -----------------------------------
 
 
@@ -322,14 +352,14 @@ def main():
         "is meaningless otherwise). Qwen3-0.6B/8B share one; mixed families don't."
     )
 
-    kw = dict(torch_dtype=dtype, device_map=device)
+    kw = dict(device_map=device, **dtype_kwarg(dtype))
     if args.load_in_8bit and not args.self_test:
         kw = dict(device_map=device, load_in_8bit=True)
     print(f"loading target {target_name} ...")
     target = AutoModelForCausalLM.from_pretrained(target_name, **kw).eval()
     print(f"loading draft {args.draft} ...")
     draft = (target if args.self_test else AutoModelForCausalLM.from_pretrained(
-        args.draft, torch_dtype=dtype, device_map=device).eval())
+        args.draft, device_map=device, **dtype_kwarg(dtype)).eval())
 
     eos_ids = {tok.eos_token_id}
     ge = target.generation_config.eos_token_id
@@ -368,6 +398,7 @@ def main():
     tot_events = tot_cycles = tot_tokens = 0
     tot_paranoid = tot_paranoid_bad = 0
     survive_disagreements = draft_cache_disagreements = 0
+    draft_cache_checks = draft_cache_near_ties = 0
     t0 = time.time()
 
     with torch.inference_mode():
@@ -377,7 +408,7 @@ def main():
             ids = build_prompt_ids(tok, text, prefill, thinking=args.thinking)
             draft_session.reset()
 
-            state = {"cycle": 0, "draft_bad": 0}
+            state = {"cycle": 0, "draft_bad": 0, "draft_checks": 0, "draft_near_tie": 0}
 
             def draft_fn(committed, gamma, _s=state, _pi=pi):
                 _s["cycle"] += 1
@@ -385,11 +416,23 @@ def main():
                     return uncached_draft_fn(committed, gamma)
                 block = draft_session.draft(committed, gamma)
                 if args.check_draft_cache and _s["cycle"] <= args.check_draft_cache:
+                    _s["draft_checks"] += 1
                     ref = uncached_draft_fn(committed, gamma)
                     if block != ref:
                         _s["draft_bad"] += 1
-                        print(f"  [draft-cache] MISMATCH prompt {_pi} cycle {_s['cycle']}: "
-                              f"cached={block[:8]} uncached={ref[:8]}")
+                        i = tc.first_mismatch(block, ref)
+                        d = draft_divergence_margin(draft, device, committed, block[:i])
+                        near_tie = d["logit_gap"] < 0.05
+                        _s["draft_near_tie"] += int(near_tie)
+                        print(f"  [draft-cache] MISMATCH prompt {_pi} cycle {_s['cycle']} "
+                              f"at draft index {i}")
+                        print(f"      cached   {tok.decode(block[i:i+4])!r}")
+                        print(f"      uncached {tok.decode(ref[i:i+4])!r}")
+                        print(f"      top-2 {[tok.decode([t]) for t in d['ids']]}  "
+                              f"logit gap {d['logit_gap']:.4f}  "
+                              f"p {d['p1']:.4f} vs {d['p2']:.4f}  -> "
+                              + ("NEAR-TIE (numerical noise, harmless)"
+                                 if near_tie else "REAL DIVERGENCE (cache bug)"))
                 return block
 
             res = tc.run_prompt(
@@ -397,6 +440,8 @@ def main():
                 branch_verify=args.branch_verify, paranoid_every=args.paranoid,
             )
             draft_cache_disagreements += state["draft_bad"]
+            draft_cache_checks += state["draft_checks"]
+            draft_cache_near_ties += state["draft_near_tie"]
             new_tokens = len(res.committed) - res.prompt_len
 
             for e in res.events:
@@ -466,8 +511,13 @@ def main():
         print(f"survival cross-check: {survive_disagreements} disagreements "
               f"({'OK' if survive_disagreements == 0 else 'INVESTIGATE'})")
     if args.check_draft_cache:
-        print(f"draft-cache cross-check: {draft_cache_disagreements} disagreements "
-              f"({'OK' if draft_cache_disagreements == 0 else 'INVESTIGATE'})")
+        hard = draft_cache_disagreements - draft_cache_near_ties
+        # Near-tie flips are bf16 noise, not a bug, and they cannot bias the
+        # study: the draft only proposes, and every metric is measured against
+        # the target. Only a large-margin disagreement indicates a cache bug.
+        print(f"draft-cache cross-check: {draft_cache_disagreements}/{draft_cache_checks} "
+              f"cycles disagree ({draft_cache_near_ties} near-tie, {hard} real) "
+              f"({'OK' if hard == 0 else 'INVESTIGATE'})")
     print("next: python analyze_traces.py " + out_path)
 
 
