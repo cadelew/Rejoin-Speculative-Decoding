@@ -8,9 +8,12 @@ token ids and never recorded the target's realized continuation.
 """
 
 import json
+import random
 import statistics as st
 import sys
 from collections import Counter, defaultdict
+
+import trace_core as tc
 
 KS = [1, 2, 4, 8, 16, 32]
 
@@ -49,6 +52,37 @@ def classify(e):
     if rej.strip().isdigit() or cor.strip().isdigit():
         return "numeric"
     return "semantic"
+
+
+def null_alignment(ev, seed=0):
+    """Chance-level alignment: pair each escrow with ANOTHER event's continuation.
+
+    Python boilerplate repeats itself -- `    return result`, `):\\n        `,
+    `for i in range(len(` -- so a shared 4-token run is not by itself evidence
+    that the escrow's plan survived. This is the null: same escrows, same
+    continuations, wrong pairings. Any observed statistic must clear it before
+    it means anything.
+    """
+    n = len(ev)
+    if n < 2:
+        return None
+    rng = random.Random(seed)
+    order = list(range(n))
+    rng.shuffle(order)
+    for i in range(n):  # derange: nobody paired with themselves
+        if order[i] == i:
+            j = rng.choice([k for k in range(n) if k != i])
+            order[i], order[j] = order[j], order[i]
+
+    bridges, runs = [], []
+    for i, j in enumerate(order):
+        suf = ev[i].get("suffix_ids") or []
+        real = ev[j].get("realized_ids") or []
+        if not suf or not real:
+            continue
+        bridges.append(tc.best_bridge(suf, real)[0])
+        runs.append(tc.longest_common_run(suf, real)[0])
+    return (bridges, runs) if bridges else None
 
 
 def curve(vals, ks=KS):
@@ -117,6 +151,19 @@ def report_domain(dom, ev, summ, has_align):
         print("\n-- longest shared run (slack on BOTH sides) --")
         print(band("lcs_len", Lc))
         print("  lcs curve              " + curve(Lc))
+
+        null = null_alignment(ev)
+        if null:
+            nb, nr = null
+            print("\n-- chance control (escrows paired with the WRONG continuation) --")
+            print(band("null L_bridge", nb))
+            print(band("null lcs_len", nr))
+            print(f"  {'signal over chance':<24} L_bridge {st.mean(Lb) - st.mean(nb):+.2f}   "
+                  f"lcs {st.mean(Lc) - st.mean(nr):+.2f} tokens/event")
+            print(f"  {'lcs curve (null)':<24} " + curve(nr))
+            if st.mean(Lc) - st.mean(nr) < 1.0:
+                print("  WARNING: lcs barely clears chance. Shared runs here are "
+                      "boilerplate n-gram collisions, not surviving plan.")
 
     print("\n-- event taxonomy --")
     tax = Counter(classify(e) for e in ev)
