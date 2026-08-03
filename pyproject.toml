@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rejoin-speculative-decoding"
+version = "0.1.0"
+description = "Reference implementation of exact suffix-preserving speculative decoding"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Rejoin contributors" }]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.8",
+    "pytest>=7.4",
+    "ruff>=0.4",
+]
+
+[tool.setuptools.packages.find]
+include = ["rejoin*"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.9"
+strict = true
+files = ["rejoin", "tests"]

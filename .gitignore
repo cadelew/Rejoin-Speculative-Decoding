@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+build/
+dist/
+
+# Generated experiment output should not enter source control by default.
+artifacts/
+traces/
