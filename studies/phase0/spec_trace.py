@@ -415,10 +415,18 @@ def main():
     device = "cuda" if torch.cuda.is_available() else (
         "mps" if torch.backends.mps.is_available() else "cpu")
     if device == "cuda":
-        dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        # torch.cuda.is_bf16_supported() counts EMULATED bf16, so it returns True
+        # on Turing (T4, SM 7.5) -- which has fp16 tensor cores but none for
+        # bf16. Running bf16 there falls back to a slow path and costs roughly an
+        # order of magnitude. Require Ampere or newer for bf16.
+        major, _ = torch.cuda.get_device_capability()
+        use_bf16 = major >= 8 and torch.cuda.is_bf16_supported()
+        dtype = torch.bfloat16 if use_bf16 else torch.float16
+        print(f"device={device} sm_{major}x dtype={dtype}"
+              + ("" if use_bf16 else "  (no bf16 tensor cores here; fp16 is much faster)"))
     else:
         dtype = torch.float16
-    print(f"device={device} dtype={dtype}")
+        print(f"device={device} dtype={dtype}")
 
     target_name = args.draft if args.self_test else args.target
     tok = AutoTokenizer.from_pretrained(target_name)
@@ -466,6 +474,7 @@ def main():
         "target": target_name, "draft": args.draft,
         "target_revision": model_revision(target), "draft_revision": model_revision(draft),
         "device": device, "dtype": str(dtype),
+        "sm": (torch.cuda.get_device_capability() if device == "cuda" else None),
         "gpu": torch.cuda.get_device_name(0) if device == "cuda" else None,
         "gamma": args.gamma, "max_new": args.max_new, "n_prompts": len(pairs),
         "start": args.start,
