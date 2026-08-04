@@ -277,8 +277,23 @@ def load_prompts(domain, n):
     """
     from datasets import load_dataset
 
+    def _load(candidates, *args, **kw):
+        """Try canonical namespaced ids first, then the legacy bare name.
+
+        huggingface_hub now rejects bare dataset ids ("openai_humaneval" must be
+        "openai/openai_humaneval"), but older pinned versions only know the bare
+        form, so both are attempted.
+        """
+        last = None
+        for name in candidates:
+            try:
+                return load_dataset(name, *args, **kw)
+            except Exception as exc:  # noqa: BLE001 - report the last failure
+                last = exc
+        raise RuntimeError(f"could not load any of {candidates}: {last}")
+
     if domain == "code":
-        ds = load_dataset("openai_humaneval", split="test")
+        ds = _load(["openai/openai_humaneval", "openai_humaneval"], split="test")
         # The signature + docstring go into the prefill, so generation starts at
         # the function body and neither the fence nor the docstring can diverge.
         return [
@@ -290,13 +305,13 @@ def load_prompts(domain, n):
             for r in ds
         ][:n]
     if domain == "math":
-        ds = load_dataset("gsm8k", "main", split="test")
+        ds = _load(["openai/gsm8k", "gsm8k"], "main", split="test")
         return [
             (r["question"] + "\nThink step by step and give the final answer.", "")
             for r in ds
         ][:n]
     if domain == "chat":
-        ds = load_dataset("tatsu-lab/alpaca", split="train")
+        ds = _load(["tatsu-lab/alpaca"], split="train")
         return [(r["instruction"], "") for r in ds if not r["input"]][:n]
     raise ValueError(f"unknown domain {domain!r} (use code|math|chat, or add a loader)")
 
@@ -394,6 +409,17 @@ def main():
         "is meaningless otherwise). Qwen3-0.6B/8B share one; mixed families don't."
     )
 
+    # Resolve prompts BEFORE loading weights: a bad dataset id should fail in
+    # seconds, not after minutes of shard loading.
+    if args.self_test:
+        pairs = [("Write a haiku about the ocean.", ""), ("Explain what a hash map is.", "")]
+    else:
+        pairs = load_prompts(args.domain, args.n)
+    if args.start:
+        pairs = pairs[args.start :]
+        print(f"resuming at prompt {args.start} ({len(pairs)} remaining)")
+    print(f"{len(pairs)} prompts ready for domain {args.domain!r}")
+
     kw = dict(device_map=device, **dtype_kwarg(dtype))
     if args.load_in_8bit and not args.self_test:
         kw = dict(device_map=device, load_in_8bit=True)
@@ -411,14 +437,6 @@ def main():
     session = HFTargetSession(target, device)
     draft_session = HFDraftSession(draft, device, eos_ids)
     uncached_draft_fn = make_uncached_draft_fn(draft, device, eos_ids)
-
-    if args.self_test:
-        pairs = [("Write a haiku about the ocean.", ""), ("Explain what a hash map is.", "")]
-    else:
-        pairs = load_prompts(args.domain, args.n)
-    if args.start:
-        pairs = pairs[args.start:]
-        print(f"resuming at prompt {args.start} ({len(pairs)} remaining)")
 
     out_path = args.out or f"traces/{args.domain}.jsonl"
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
