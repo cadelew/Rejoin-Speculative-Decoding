@@ -22,7 +22,11 @@ KS = [1, 2, 4, 8, 16, 32]
 #   batched:    escrow and fresh draft verified as a batch of 2
 #               sharing one KV prefix; decode is memory-bound, so
 #               the second row is close to free                    -> ~0.12
-COST_MODELS = [("sequential branch pass", 1.00), ("batched (batch-2, shared prefix)", 0.12)]
+COST_MODELS = [
+    ("sequential branch pass", 1.00),
+    ("batched (batch-2, shared prefix)", 0.12),
+    ("FREE (c=0; unreachable upper bound)", 0.00),
+]
 
 
 def load(paths):
@@ -85,6 +89,68 @@ def null_alignment(ev, seed=0):
     return (bridges, runs) if bridges else None
 
 
+def gate_report(ev, Lf, Lt, N, P, cost=0.12):
+    """Selective salvage: attempt the escrow only on events matching a predicate.
+
+    Gating scales benefit AND cost by the same coverage, so the break-even
+    threshold is unchanged:
+
+        (N + f.E.g_sel) / (P + c.f.E) > N/P   <=>   g_sel > c.T
+
+    A gate therefore helps only if its SELECTED events clear g_min on their
+    own. Coverage does not enter the threshold -- but it does bound the overall
+    speedup, which is why a narrow gate can clear break-even and still be worth
+    almost nothing.
+
+    Every predicate here is observable ONLINE at the moment of rejection. A gate
+    that needed the target's continuation would be an oracle, not a policy.
+    """
+    E, n = len(ev), len(ev)
+    T = N / max(P, 1)
+    g_min = cost * T
+    dt = [max(0, a - b) for a, b in zip(Lt, Lf)]
+
+    def ent(e):
+        return e.get("entropy_at_rejection") or 0.0
+
+    def pr(e):
+        return e.get("p_rejected") or 0.0
+
+    gates = [("ORACLE: delta_trim > 0", [x > 0 for x in dt])]
+    for cls in ("whitespace", "numeric", "format", "semantic"):
+        gates.append((f"class == {cls}", [classify(e) == cls for e in ev]))
+    for t in (4, 8, 12):
+        gates.append((f"m >= {t}", [e["m"] >= t for e in ev]))
+    for t in (2, 4, 8):
+        gates.append((f"a >= {t}", [e["a"] >= t for e in ev]))
+    for t in (0.05, 0.5, 1.0):
+        gates.append((f"entropy >= {t}", [ent(e) >= t for e in ev]))
+        gates.append((f"entropy <  {t}", [ent(e) < t for e in ev]))
+    for t in (0.05, 0.2, 0.4):
+        gates.append((f"p_rejected >= {t}", [pr(e) >= t for e in ev]))
+
+    rows = []
+    for name, mask in gates:
+        k = sum(mask)
+        if k < max(20, 0.005 * n):
+            continue
+        g_sel = st.mean([d for d, m in zip(dt, mask) if m])
+        f = k / n
+        new = (N + f * E * g_sel) / (P + cost * f * E)
+        rows.append((g_sel, name, f, new / T - 1.0))
+
+    print(f"\n-- selective salvage (gate on online-observable features, c={cost}) --")
+    print(f"  A gate helps only if its selected events clear g_min = {g_min:.2f} on")
+    print("  their own; coverage cancels from the threshold but caps the payoff.")
+    print(f"  {'gate':<26}{'coverage':>9}{'g_sel':>8}{'overall':>10}   verdict")
+    for g_sel, name, f, gain in sorted(rows, reverse=True)[:12]:
+        print(f"  {name:<26}{f:>8.1%}{g_sel:>8.2f}{gain:>+9.1%}   "
+              + ("clears g_min" if g_sel > g_min else "below g_min"))
+    print("  ORACLE is the ceiling for ANY gate: it selects exactly the events that")
+    print("  win, which no online predicate can do. If its overall column is small,")
+    print("  the headroom is small no matter how good the gate.")
+
+
 def curve(vals, ks=KS):
     n = max(len(vals), 1)
     return "  ".join(f">={k}:{sum(v >= k for v in vals)/n:5.1%}" for k in ks)
@@ -129,6 +195,7 @@ def report_domain(dom, ev, summ, has_align):
     print("  survival curve         " + curve(Ls))
 
     gains = {"offset-0": st.mean([max(0, x) for x in d])}
+    Lt = None
 
     if has_align:
         Lb = [e["L_bridge"] for e in ev]
@@ -242,6 +309,9 @@ def report_domain(dom, ev, summ, has_align):
                 verdict = "PAYS" if g > g_min else "does not pay"
                 print(f"      recycle-if-better [{gname:<11}] g={g:5.2f}  "
                       f"-> {new:5.2f} tok/pass ({new/T - 1:+6.1%})  {verdict}")
+
+        if Lt is not None:
+            gate_report(ev, Lf, Lt, N, P)
 
 
 def main():
