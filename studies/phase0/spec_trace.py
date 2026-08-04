@@ -317,16 +317,35 @@ def load_prompts(domain, n):
 
 
 def build_prompt_ids(tok, user_text, prefill="", thinking=False):
+    """Chat-template the prompt and return TOKEN IDS.
+
+    `apply_chat_template` has returned three different shapes across versions:
+    a list of ids, a BatchEncoding, and (transformers 5.x) a plain string. The
+    string case is silently destructive here -- list(str) yields characters,
+    which only surfaces much later as a torch dtype error -- so normalise
+    explicitly and assert.
+    """
     msgs = [{"role": "user", "content": user_text}]
     try:  # Qwen3 exposes thinking mode through the template
-        ids = tok.apply_chat_template(
-            msgs, add_generation_prompt=True, enable_thinking=thinking
+        out = tok.apply_chat_template(
+            msgs, add_generation_prompt=True, tokenize=True, enable_thinking=thinking
         )
     except TypeError:
-        ids = tok.apply_chat_template(msgs, add_generation_prompt=True)
-    ids = list(ids)
+        out = tok.apply_chat_template(msgs, add_generation_prompt=True, tokenize=True)
+
+    if isinstance(out, str):
+        ids = tok.encode(out, add_special_tokens=False)
+    elif hasattr(out, "input_ids"):
+        ids = out.input_ids
+        if len(ids) and isinstance(ids[0], (list, tuple)):
+            ids = ids[0]
+    else:
+        ids = list(out)
+    ids = [int(t) for t in ids]
     if prefill:
-        ids += tok.encode(prefill, add_special_tokens=False)
+        ids += [int(t) for t in tok.encode(prefill, add_special_tokens=False)]
+    if not ids:
+        raise RuntimeError("chat template produced no tokens")
     return ids
 
 
