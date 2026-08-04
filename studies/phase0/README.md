@@ -17,6 +17,104 @@ is `2`; every record carries `"schema"`.
 
 ---
 
+## 0. Results
+
+**The study was run and the mechanism does not pay.** Escrowed suffixes survive
+far above chance, but only under alignment slack that is unavailable online, and
+every implementable policy falls below break-even.
+
+Qwen3-4B target + Qwen3-0.6B draft, γ=16, greedy, on a T4.
+
+| run | prompts | events | tokens/target-pass |
+|---|---|---|---|
+| code (HumanEval, bf16) | 164 | 4004 | 6.08 |
+| math + reasoning chains (GSM8K, `--thinking`, fp16) | 25 | 4574 | 6.03 |
+
+### The escrow does survive
+
+Escrow content reappears in the target's continuation far above the chance
+control (escrows paired with *other* events' continuations):
+
+| | code | reasoning | chance (code / reasoning) |
+|---|---|---|---|
+| `lcs ≥ 4` | 44.5% | 51.8% | 0.8% / 1.7% |
+| `lcs ≥ 8` | 15.7% | 15.5% | 0.0% / 0.1% |
+| mean `lcs_len` | 4.05 | 4.39 | 0.84 / 1.35 |
+
+A 30–56× ratio at `lcs ≥ 4`. This is real and it is not boilerplate collision.
+It is also invisible to offset-0 measurement, which is all schema 1 recorded.
+
+### But it survives misaligned, and the reachable rungs fail
+
+Mean accepted tokens per rejection, and the recycle-if-better gain `g` against
+break-even `g_min = cost_factor × tokens-per-pass`:
+
+| rung | code `g` | reasoning `g` | `g_min` (batched) | implementable |
+|---|---|---|---|---|
+| offset-0 (the original Rejoin design) | 0.06 | 0.07 | ~0.72 | yes |
+| front-trim (batched candidate tree) | 0.13 | 0.22 | ~0.72 | yes |
+| best-bridge | 0.36 | 0.34 | ~0.72 | no — needs the target's continuation |
+| two-sided (`lcs`) | 1.55 | 1.69 | ~0.72 | no — and never pays for its bridge |
+
+At **zero** verification cost — the ceiling regardless of engineering —
+front-trim is worth **+1.8%** (code) and **+3.3%** (reasoning). The frequently
+quoted "+10–13%" belongs to the two-sided rung, which needs the answer in
+advance to build its candidate.
+
+The structural reason: the escrow is `P(continuation | prefix + wrong_token)`
+and the fresh draft is `P(continuation | prefix + correct_token)` — the same
+model, with the fresh sample strictly better conditioned. `delta` is negative in
+every domain, at every rung, across 8578 events.
+
+### Selective application does not rescue it
+
+Gating scales benefit and cost identically, so `(N + f·E·g_sel)/(P + c·f·E) >
+N/P` reduces to `g_sel > c·T`: **coverage cancels**. A gate helps only if its
+selected events clear `g_min` alone, and coverage instead caps the payoff.
+
+Twenty online-observable gates were tested (event class, escrow length, mismatch
+index, target entropy at both tails, `p_rejected`). **None clears `g_min` on
+either workload.** The best is `p_rejected ≥ 0.4` at `g_sel = 0.42` against 0.72
+— near-misses genuinely salvage about twice as well as blunders, and it is still
+1.7× short at 7.7% coverage.
+
+An ORACLE gate selecting exactly the winning events — the ceiling for any
+predicate that could ever exist — caps at **+1.3%** (code) and **+2.5%**
+(reasoning), because only 5–7% of rejections have any headroom at all.
+
+### The roadmap's structural-repetition prediction did not hold
+
+Reasoning chains were the strongest remaining case: the roadmap predicts benefit
+rises with structural repetition, and FailFast reported high suffix utility
+there. Thousand-token reasoning chains gave `lcs_len` 4.39 against short Python
+functions' 4.05. Two maximally different workloads, the same answer.
+
+### Secondary findings
+
+- **Entropy does not predict survival.** A pilot signal vanished at scale (code
+  0.58 low-entropy vs 0.54 high). Do not gate on it.
+- **Most rejections are blunders, not near-misses**: 43.5% of code rejections
+  have `p_rejected < 0.01` (24.6% in reasoning).
+- **Tokenization mismatches are the best-salvaging class** (`L_survive` 2.52 vs
+  0.50 for semantic) but only 2.1% of events — contribution ≈ 0.05 tokens/event.
+- **Prompt format contaminated the pilot**: an unpinned output format put 27% of
+  events in a maximum-escrow, zero-survival bucket. The prefill fixed it (2.5%).
+
+### Caveats
+
+- One model pair, one γ, greedy only. `g_min` scales with tokens-per-pass, so a
+  much weaker draft or larger target lowers the bar — untested, and the escrow
+  plausibly degrades just as fast.
+- 164 and 25 prompts. Events are correlated within prompts, so intervals are
+  wider than ~4000 events suggests. Do not quote three significant figures.
+- The code run is bf16 and the reasoning run fp16 (T4 has no bf16 tensor cores).
+  The agreement across a far larger domain gap makes dtype implausible as a
+  driver, but it is a confound.
+- The final runs carry no `--paranoid` checks; cache correctness was validated
+  on the smoke run (26/26) and by the survival cross-check (0 disagreements).
+
+---
+
 ## 1. What you're measuring
 
 Standard greedy speculative decoding: the draft proposes γ tokens, the target

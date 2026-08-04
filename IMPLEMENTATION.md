@@ -39,7 +39,7 @@ order and the decision table.
 - [x] Search oracle anchor offsets offline (`L_bridge`, `bridge_k`, `lcs_len`).
 - [x] Emit survival curves by workload, draft length, and mismatch category.
 - [x] Estimate a break-even gain per event under explicit cost models.
-- [ ] Run the study at scale across domains and draft-block lengths.
+- [x] Run the study at scale across domains.
 
 Gate: continue only if a meaningful workload has a nontrivial 8+ token survival
 rate or a useful long tail of 16–64+ token survival.
@@ -51,12 +51,24 @@ result there cannot distinguish a semantic pivot from a plan that resumes a few
 tokens later. Anchor-offset search is therefore part of this milestone rather
 than deferred to Milestone 5.
 
-A pilot on Qwen3-4B + 0.6B (HumanEval, γ=32, 60 events) failed the gate on
-offset-0 survival: 1.7% of events reached 8 tokens, mean paired delta −8.05,
-zero wins. That pilot predates the prompt-format fix and has no anchor
-measurement, so it is not yet a fair test of the gate.
+**Gate result: FAILED. Milestones 4 and 5 are closed.**
 
-## Milestone 4 — Online Rejoin-Exact
+Qwen3-4B + 0.6B, γ=16, 8578 events over HumanEval and GSM8K-with-reasoning.
+`L_bridge ≥ 8` reaches 6.2% (code) and 5.2% (reasoning) — no nontrivial 8+ tail.
+The escrow's content does survive well above chance (30–56× at `lcs ≥ 4`), but
+only under alignment slack unavailable at decode time. Every implementable rung
+falls below break-even; at zero verification cost the best is worth +1.8% to
++3.3%. Twenty online-observable gates were tested and none clears break-even; a
+perfect oracle gate caps at +2.5%. Reasoning chains, predicted to be the best
+case, matched code exactly.
+
+See [studies/phase0/README.md](studies/phase0/README.md) for the full result.
+
+## Milestone 4 — Online Rejoin-Exact (not pursued)
+
+Closed by the Milestone 3 gate. Offset-0 reattachment gains 0.06–0.07 tokens per
+rejection against a ~0.72 break-even, so the "positive end-to-end speedup" gate
+below cannot be met on any measured workload.
 
 - [ ] Connect direct reattachment to the batched model adapter.
 - [ ] Add latency-based activation instead of a fixed suffix threshold.
@@ -67,7 +79,14 @@ measurement, so it is not yet a fair test of the gate.
 Gate: 100% greedy equality and positive end-to-end speedup on at least one
 workload, with bounded memory.
 
-## Milestone 5 — Anchors and bridge repair
+## Milestone 5 — Anchors and bridge repair (not pursued)
+
+Closed by the Milestone 3 gate. Its own gate — additional salvage must exceed
+repair, verification, and memory overhead — is unreachable: the two-sided oracle
+that bounds what any repair model could recover is worth +21% to +25% at zero
+cost and zero error, and never pays for the bridge tokens it assumes. Tree-batched
+verification of front-trim candidates, the cheapest realisation of this
+milestone, measures at +1.8% to +3.3% at zero cost.
 
 - [ ] Add tokenization-safe anchor candidates and guard spans.
 - [ ] Compare heuristic anchors with the offline oracle.
