@@ -23,12 +23,13 @@ is `2`; every record carries `"schema"`.
 far above chance, but only under alignment slack that is unavailable online, and
 every implementable policy falls below break-even.
 
-Qwen3-4B target + Qwen3-0.6B draft, γ=16, greedy, on a T4.
+Qwen3-4B target + Qwen3-0.6B draft, greedy, on a T4.
 
-| run | prompts | events | tokens/target-pass |
-|---|---|---|---|
-| code (HumanEval, bf16) | 164 | 4004 | 6.08 |
-| math + reasoning chains (GSM8K, `--thinking`, fp16) | 25 | 4574 | 6.03 |
+| run | γ | prompts | events | tokens/target-pass |
+|---|---|---|---|---|
+| code (HumanEval, bf16) | 16 | 164 | 4004 | 6.08 |
+| math + reasoning chains (GSM8K, `--thinking`, fp16) | 16 | 25 | 4574 | 6.03 |
+| code, long-block sweep (HumanEval, bf16) | 32 | 100 | 2158 | 6.77 |
 
 ### The escrow does survive
 
@@ -64,7 +65,7 @@ advance to build its candidate.
 The structural reason: the escrow is `P(continuation | prefix + wrong_token)`
 and the fresh draft is `P(continuation | prefix + correct_token)` — the same
 model, with the fresh sample strictly better conditioned. `delta` is negative in
-every domain, at every rung, across 8578 events.
+every domain, at every rung, at both block lengths, across 10,736 events.
 
 ### Selective application does not rescue it
 
@@ -89,6 +90,34 @@ rises with structural repetition, and FailFast reported high suffix utility
 there. Thousand-token reasoning chains gave `lcs_len` 4.39 against short Python
 functions' 4.05. Two maximally different workloads, the same answer.
 
+### Longer speculative blocks do not concentrate more salvage — a γ sweep
+
+γ=16 caps every escrow at 15 tokens, so "16–64+ token survival" — the long tail
+the Milestone 3 gate asks about — was structurally unobservable there. A γ=32
+sweep (100 HumanEval prompts, 2158 events) makes it observable: `lcs ≥ 16` is
+8.5% and `L_bridge ≥ 16` is 2.6%, both zero at γ=16.
+
+Read in absolute tokens this looks like a long tail appearing. It is not one:
+`m` roughly doubled alongside γ (10.46 → 21.04), so a fixed 16-token threshold
+is mechanically easier to clear with a longer escrow. The question that matters
+is the **proportion** of the escrow that survives, and it *falls* as blocks get
+longer:
+
+| survival / escrow length | γ=16 code | γ=16 reasoning | γ=32 code |
+|---|---|---|---|
+| `lcs / m` (two-sided) | 38.7% | 38.7% | **30.8%** |
+| `L_bridge / m` | 14.4% | 12.3% | **9.5%** |
+| `L_trim / m` (implementable) | 10.5% | 12.1% | **6.7%** |
+| `L_survive / m` (offset-0) | 5.3% | 4.5% | **3.7%** |
+
+Every rung degrades at the longer block length. The economics agree: front-trim
+gain fell to `g = 0.12` (from 0.13–0.22) while `g_min` rose to 0.81 (from
+~0.72), and the gate analysis rerun on this trace reproduces the earlier
+result exactly — ORACLE caps at +1.2%, no online-observable predicate clears
+`g_min`. Longer blocks make the *raw* tail longer only because the escrow
+itself is longer; they do not make it more salvageable, and the roadmap's
+prediction fails a second, independent way.
+
 ### Secondary findings
 
 - **Entropy does not predict survival.** A pilot signal vanished at scale (code
@@ -102,9 +131,9 @@ functions' 4.05. Two maximally different workloads, the same answer.
 
 ### Caveats
 
-- One model pair, one γ, greedy only. `g_min` scales with tokens-per-pass, so a
-  much weaker draft or larger target lowers the bar — untested, and the escrow
-  plausibly degrades just as fast.
+- One model pair, greedy only, γ ∈ {16, 32} only. `g_min` scales with
+  tokens-per-pass, so a much weaker draft or larger target lowers the bar —
+  untested, and the escrow plausibly degrades just as fast.
 - 164 and 25 prompts. Events are correlated within prompts, so intervals are
   wider than ~4000 events suggests. Do not quote three significant figures.
 - The code run is bf16 and the reasoning run fp16 (T4 has no bf16 tensor cores).

@@ -10,8 +10,9 @@ decoding and the Phase 0 study that measured whether the idea works.
 
 ## Findings: it does not pay
 
-The crux experiment was run on Qwen3-4B + Qwen3-0.6B, γ=16, over 8578 rejection
-events across two workloads (HumanEval code, and GSM8K with reasoning chains).
+The crux experiment was run on Qwen3-4B + Qwen3-0.6B over 10,736 rejection
+events across three runs (HumanEval code and GSM8K reasoning chains at γ=16,
+plus a γ=32 sweep on HumanEval).
 
 Escrowed suffixes **do** survive — their content reappears in the target's
 continuation at 30–56× the chance rate. But they survive *misaligned*, and every
@@ -19,16 +20,19 @@ policy that can be implemented online falls below break-even:
 
 | rung | gain per event | break-even | implementable |
 |---|---|---|---|
-| offset-0 (direct reattachment) | 0.06–0.07 | ~0.72 | yes |
-| front-trim (batched candidate tree) | 0.13–0.22 | ~0.72 | yes |
-| best-bridge | 0.34–0.36 | ~0.72 | no |
-| two-sided | 1.55–1.69 | ~0.72 | no |
+| offset-0 (direct reattachment) | 0.06–0.07 | ~0.72–0.81 | yes |
+| front-trim (batched candidate tree) | 0.12–0.22 | ~0.72–0.81 | yes |
+| best-bridge | 0.34–0.52 | ~0.72–0.81 | no |
+| two-sided | 1.55–3.03 | ~0.72–0.81 | no |
 
 At zero verification cost — the ceiling regardless of engineering — the best
-implementable policy is worth **+1.8% to +3.3%**. Selective application does not
+implementable policy is worth **+1.7% to +3.3%**. Selective application does not
 help: of twenty online-observable gates none clears break-even, and a perfect
-oracle gate caps at +2.5%. Reasoning chains, which the roadmap predicted would
-be the best case, gave the same answer as code.
+oracle gate caps at +2.5%. Reasoning chains and longer speculative blocks were
+the two conditions the roadmap predicted would help most; both matched or
+underperformed the baseline code run — longer blocks produce a longer raw
+survival tail only because the escrow itself is longer, while survival as a
+*fraction* of escrow length actually falls (38.7% → 30.8%, γ=16→32).
 
 The structural reason is that the escrow is `P(continuation | prefix +
 wrong_token)` while a fresh draft is `P(continuation | prefix + correct_token)`

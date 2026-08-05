@@ -53,22 +53,27 @@ than deferred to Milestone 5.
 
 **Gate result: FAILED. Milestones 4 and 5 are closed.**
 
-Qwen3-4B + 0.6B, γ=16, 8578 events over HumanEval and GSM8K-with-reasoning.
-`L_bridge ≥ 8` reaches 6.2% (code) and 5.2% (reasoning) — no nontrivial 8+ tail.
-The escrow's content does survive well above chance (30–56× at `lcs ≥ 4`), but
-only under alignment slack unavailable at decode time. Every implementable rung
-falls below break-even; at zero verification cost the best is worth +1.8% to
-+3.3%. Twenty online-observable gates were tested and none clears break-even; a
-perfect oracle gate caps at +2.5%. Reasoning chains, predicted to be the best
-case, matched code exactly.
+Qwen3-4B + 0.6B, 10,736 events over HumanEval, GSM8K-with-reasoning (γ=16), and
+a γ=32 sweep. The escrow's content does survive well above chance (30–56× at
+`lcs ≥ 4`), but only under alignment slack unavailable at decode time. A raw
+16+ token tail does exist at γ=32 (`L_bridge ≥ 16` 2.6%, `lcs ≥ 16` 8.5%,
+structurally impossible to observe at γ=16 where `m ≤ 15`) — but survival as a
+**fraction of escrow length** falls at the longer block length (`lcs/m`
+38.7% → 30.8%), so this is the escrow growing with the block, not becoming more
+salvageable. Every implementable rung falls below break-even at both block
+lengths; at zero verification cost the best is worth +1.7% to +3.3%. Twenty
+online-observable gates were tested and none clears break-even; a perfect
+oracle gate caps at +2.5%. Reasoning chains and long blocks were the two cases
+predicted to help most; both matched or underperformed the baseline code run.
 
 See [studies/phase0/README.md](studies/phase0/README.md) for the full result.
 
 ## Milestone 4 — Online Rejoin-Exact (not pursued)
 
 Closed by the Milestone 3 gate. Offset-0 reattachment gains 0.06–0.07 tokens per
-rejection against a ~0.72 break-even, so the "positive end-to-end speedup" gate
-below cannot be met on any measured workload.
+rejection against a ~0.72–0.81 break-even (γ=16 and γ=32 respectively), so the
+"positive end-to-end speedup" gate below cannot be met on any measured
+workload or block length.
 
 - [ ] Connect direct reattachment to the batched model adapter.
 - [ ] Add latency-based activation instead of a fixed suffix threshold.
